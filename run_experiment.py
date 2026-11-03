@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import signal
+import sys
 import time
 import traceback
 
@@ -213,6 +214,7 @@ def main():
         duration = C.QUICK_TIME if args.quick else C.EXPERIMENT_TIME
     if duration <= 0:
         parser.error('duration must be positive')
+    sys.stdout.reconfigure(line_buffering=True)   # progress shows up in a redirected log
 
     for sig in STOP_SIGNALS:
         if signal.getsignal(sig) is not signal.SIG_IGN:   # e.g. leave nohup in effect
