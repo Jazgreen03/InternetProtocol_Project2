@@ -14,7 +14,7 @@ from mininet.log import setLogLevel
 import config as C
 from monitor import start_monitors, stop_monitors
 from topology import CONGESTION_CONTROL, OFFLOADS, build_net
-from traffic import start_traffic, stop_traffic
+from traffic import CLIENTS, start_traffic, stop_traffic
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # The iperf server asks for a 16 MB window (-w 16m); the kernel silently caps
@@ -44,10 +44,17 @@ def _write_sysctl(name, value):
         f.write(str(value))
 
 
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
 def _exit_on_signal(signum, frame):
     # Python's default SIGTERM/SIGHUP action exits without running finally
     # blocks; raising SystemExit lets every teardown and restore step run.
-    raise SystemExit('stopped by signal %d' % signum)
+    # Later stop signals are ignored so they cannot cut that cleanup short
+    # (`timeout` alone sends SIGTERM twice: to the process and to its group).
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)
+    raise SystemExit('stopped by signal %d; cleaning up' % signum)
 
 
 def write_meta(qdir, queue_size, duration, t0, traffic_start):
@@ -98,7 +105,7 @@ def _csv_rows(path):
         return []
 
 
-def summarize(qdir, queue_size, duration):
+def summarize(qdir, queue_size, duration, client_errors):
     """Print the run's key numbers and save them to summary.json."""
     ping = _csv_rows(os.path.join(qdir, 'ping.csv'))
     downloads = [r.split(',') for r in _csv_rows(os.path.join(qdir, 'downloads.csv'))]
@@ -114,6 +121,7 @@ def summarize(qdir, queue_size, duration):
         's1d1_avg_mbps': s1d1,
         's1d1_source': source if s1d1 is not None else None,
         's2d2_avg_mbps': round(sum(sizes) * 8 / duration / 1e6, 3),
+        'client_errors': client_errors,
     }
     with open(os.path.join(qdir, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=2)
@@ -176,9 +184,18 @@ def run_one(queue_size, duration, outdir):
             for line in kill_leftovers(net):
                 print('WARNING: killed leftover process ' + line)
         finally:
+            # No `mn -c` here: net.stop() removes this run's interfaces, and
+            # mn -c also deletes /tmp/*.log and /tmp/*.out, which would wipe a
+            # log the user redirected there. Run `sudo mn -c` by hand after a crash.
             net.stop()
-            os.system('mn -c > /dev/null 2>&1')
-    summarize(qdir, queue_size, duration)
+
+    # A positive exit code is the client's own error; negative ones are the
+    # signals stop_traffic sent to a client that overran.
+    client_errors = ['%s exited with code %d' % (name, traffic[name].returncode)
+                     for name in CLIENTS if traffic[name].returncode > 0]
+    for error in client_errors:
+        print('WARNING: %s; see %s' % (error, os.path.join(qdir, 'traffic.log')))
+    summarize(qdir, queue_size, duration, client_errors)
 
 
 def main():
@@ -197,8 +214,9 @@ def main():
     if duration <= 0:
         parser.error('duration must be positive')
 
-    signal.signal(signal.SIGTERM, _exit_on_signal)
-    signal.signal(signal.SIGHUP, _exit_on_signal)
+    for sig in STOP_SIGNALS:
+        if signal.getsignal(sig) is not signal.SIG_IGN:   # e.g. leave nohup in effect
+            signal.signal(sig, _exit_on_signal)
     setLogLevel('warning')
     saved = {}
     try:

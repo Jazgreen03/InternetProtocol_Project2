@@ -6,6 +6,7 @@ Each request is logged with the client's port, which shows that one session.
 """
 import argparse
 import functools
+import socketserver
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -18,6 +19,15 @@ class KeepAliveHandler(SimpleHTTPRequestHandler):
                                            format % args))
 
 
+class Server(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind looks up the host's FQDN before listening.
+        # Inside a Mininet namespace DNS is unreachable, so that lookup can
+        # stall for seconds while clients are refused; the name is not needed.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, required=True)
@@ -25,7 +35,7 @@ def main():
     args = parser.parse_args()
 
     handler = functools.partial(KeepAliveHandler, directory=args.directory)
-    ThreadingHTTPServer(('', args.port), handler).serve_forever()
+    Server(('', args.port), handler).serve_forever()
 
 
 if __name__ == '__main__':

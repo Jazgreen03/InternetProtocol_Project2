@@ -17,6 +17,11 @@ CLIENTS = ['iperf_client', 'ping_client', 'fetch_loop']
 SERVERS = ['iperf_server', 'echo_server', 'http_server']
 
 
+def _iperf(*args):
+    # stdbuf -oL: line-buffered reports, so a kill() cannot discard the total.
+    return ['stdbuf', '-oL', 'iperf'] + list(args)
+
+
 def _tool(name):
     # -u: unbuffered output, so log lines survive terminate() (Python 3.8
     # fully buffers stderr when it is redirected to a file).
@@ -40,7 +45,7 @@ def start_traffic(net, duration, outdir, t0):
         # the assignment notes it is not needed on the client.
         with open(os.path.join(outdir, 'iperf_d1.txt'), 'w') as iperf_out:
             handles['iperf_server'] = d1.popen(
-                ['iperf', '-s', '-w', '16m', '-p', str(C.IPERF_PORT)],
+                _iperf('-s', '-w', '16m', '-p', str(C.IPERF_PORT)),
                 stdout=iperf_out, stderr=log)
         handles['echo_server'] = d1.popen(
             _tool('tcp_echo_server.py') + ['--port', str(C.PING_PORT)], **to_log)
@@ -56,8 +61,8 @@ def start_traffic(net, duration, outdir, t0):
 
         with open(os.path.join(outdir, 'iperf_s1.txt'), 'w') as iperf_out:
             handles['iperf_client'] = s1.popen(
-                ['iperf', '-c', C.IP['d1'], '-p', str(C.IPERF_PORT), '-t', str(duration),
-                 '-i', '1', '-Z', 'reno'],
+                _iperf('-c', C.IP['d1'], '-p', str(C.IPERF_PORT), '-t', str(duration),
+                       '-i', '1', '-Z', 'reno'),
                 stdout=iperf_out, stderr=log)
         common = ['--duration', str(duration), '--t0', repr(t0)]
         handles['ping_client'] = s1.popen(
@@ -70,7 +75,7 @@ def start_traffic(net, duration, outdir, t0):
             ['--url', 'http://%s:%d/file_s2d2' % (C.IP['s2'], C.HTTP_PORT),
              '--interval', str(C.DOWNLOAD_INTERVAL), '--out', os.path.join(outdir, 'downloads.csv')],
             **to_log)
-    except Exception:
+    except BaseException:   # includes the SystemExit raised on SIGTERM
         stop_traffic(handles)
         raise
     finally:

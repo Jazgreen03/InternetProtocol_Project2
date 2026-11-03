@@ -98,7 +98,7 @@ def build_net(queue_size):
             actual = net[name].cmd('sysctl -n net.ipv4.tcp_congestion_control').strip()
             if actual != algo:
                 raise RuntimeError('%s: congestion control is %r, wanted %r' % (name, actual, algo))
-    except Exception:
+    except BaseException:   # includes the SystemExit raised on SIGTERM
         net.stop()
         raise
     return net

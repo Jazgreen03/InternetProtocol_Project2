@@ -16,6 +16,7 @@ import time
 
 MSG_SIZE = 64          # bytes per probe; first 4 bytes are the sequence number
 FINAL_WAIT = 2.0       # seconds to wait for outstanding echoes after the last probe
+SLICE = 0.1            # longest single wait, so a SIGTERM is noticed promptly
 CONNECT_TIMEOUT = 2.0
 CONNECT_RETRY = 5.0    # seconds to keep retrying the initial connect
 
@@ -32,6 +33,7 @@ def connect(server, port):
     while True:
         try:
             sock = socket.create_connection((server, port), timeout=CONNECT_TIMEOUT)
+            sock.settimeout(None)   # a send may block while TCP backs off; that is data, not an error
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             return sock
         except OSError:
@@ -96,8 +98,7 @@ def main():
 
         deadline = time.monotonic() + FINAL_WAIT
         while pending and not stopping and time.monotonic() < deadline:
-            if select.select([sock], [], [], max(0.0, deadline - time.monotonic()))[0]:
-                read_echoes(sock, buf, pending, out)
+            wait_for_echoes(sock, buf, pending, out, min(deadline, time.monotonic() + SLICE))
         for t, _ in pending.values():
             out.write('%.3f,\n' % t)
     sock.close()
