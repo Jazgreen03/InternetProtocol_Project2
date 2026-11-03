@@ -18,7 +18,9 @@ SERVERS = ['iperf_server', 'echo_server', 'http_server']
 
 
 def _tool(name):
-    return [sys.executable, os.path.join(TOOLS_DIR, name)]
+    # -u: unbuffered output, so log lines survive terminate() (Python 3.8
+    # fully buffers stderr when it is redirected to a file).
+    return [sys.executable, '-u', os.path.join(TOOLS_DIR, name)]
 
 
 def start_traffic(net, duration, outdir, t0):

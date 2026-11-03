@@ -4,11 +4,12 @@ Probes go out on a fixed schedule (start + k * interval) whether or not
 earlier echoes have returned, so one probe is sent every interval as the spec
 asks. TCP returns the echoes in order, however late, and each is logged when
 it arrives. Output CSV: t,rtt_ms with one row per probe, where t = send time
-- t0; a probe still unanswered FINAL_WAIT after the last send gets an empty
-rtt_ms.
+- t0; a probe still unanswered FINAL_WAIT after the last send, or when SIGTERM
+arrives, gets an empty rtt_ms.
 """
 import argparse
 import select
+import signal
 import socket
 import struct
 import time
@@ -17,6 +18,13 @@ MSG_SIZE = 64          # bytes per probe; first 4 bytes are the sequence number
 FINAL_WAIT = 2.0       # seconds to wait for outstanding echoes after the last probe
 CONNECT_TIMEOUT = 2.0
 CONNECT_RETRY = 5.0    # seconds to keep retrying the initial connect
+
+stopping = False
+
+
+def stop(signum, frame):
+    global stopping
+    stopping = True
 
 
 def connect(server, port):
@@ -67,6 +75,7 @@ def main():
     parser.add_argument('--out', required=True)
     args = parser.parse_args()
     t0 = args.t0 if args.t0 is not None else time.time()
+    signal.signal(signal.SIGTERM, stop)
 
     sock = connect(args.server, args.port)
     padding = b'\0' * (MSG_SIZE - 4)
@@ -77,14 +86,16 @@ def main():
         out.write('t,rtt_ms\n')
         start = time.monotonic()
         seq = 0
-        while seq * args.interval < args.duration:
+        while not stopping and seq * args.interval < args.duration:
             wait_for_echoes(sock, buf, pending, out, start + seq * args.interval)
+            if stopping:
+                break
             pending[seq] = (time.time() - t0, time.monotonic())
             sock.sendall(struct.pack('!I', seq) + padding)
             seq += 1
 
         deadline = time.monotonic() + FINAL_WAIT
-        while pending and time.monotonic() < deadline:
+        while pending and not stopping and time.monotonic() < deadline:
             if select.select([sock], [], [], max(0.0, deadline - time.monotonic()))[0]:
                 read_echoes(sock, buf, pending, out)
         for t, _ in pending.values():

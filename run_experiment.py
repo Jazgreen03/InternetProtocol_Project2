@@ -7,12 +7,13 @@ import platform
 import re
 import signal
 import time
+import traceback
 
 from mininet.log import setLogLevel
 
 import config as C
 from monitor import start_monitors, stop_monitors
-from topology import CONGESTION_CONTROL, build_net
+from topology import CONGESTION_CONTROL, OFFLOADS, build_net
 from traffic import start_traffic, stop_traffic
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +23,8 @@ SOCKET_BUF_SYSCTLS = ('net.core.rmem_max', 'net.core.wmem_max')
 MIN_SOCKET_BUF = 16 * 1024 * 1024
 # One iperf report line, e.g. "[  1] 0.0000-20.3 sec  59.8 MBytes  24.7 Mbits/sec"
 # (iperf 2.0.x prints fewer decimals, e.g. "[  3]  0.0-20.0 sec ...").
-IPERF_LINE = re.compile(r'\]\s+(\d+\.\d+)-\s*(\d+\.\d+)\s+sec.*?(\S+ [KMG]?bits/sec)')
+IPERF_LINE = re.compile(r'\]\s+(\d+\.\d+)-\s*(\d+\.\d+)\s+sec.*?([\d.]+) ([KMG]?)bits/sec')
+TO_MBPS = {'': 1e-6, 'K': 1e-3, 'M': 1.0, 'G': 1e3}
 
 
 def _sysctl_path(name):
@@ -42,6 +44,12 @@ def _write_sysctl(name, value):
         f.write(str(value))
 
 
+def _exit_on_signal(signum, frame):
+    # Python's default SIGTERM/SIGHUP action exits without running finally
+    # blocks; raising SystemExit lets every teardown and restore step run.
+    raise SystemExit('stopped by signal %d' % signum)
+
+
 def write_meta(qdir, queue_size, duration, t0, traffic_start):
     meta = {
         'queue_size': queue_size,
@@ -54,7 +62,7 @@ def write_meta(qdir, queue_size, duration, t0, traffic_start):
         'host_queue': C.ACCESS_QUEUE,
         'bottleneck_iface': C.BOTTLENECK_IFACE,
         'congestion_control': CONGESTION_CONTROL,
-        'offloads': 'tso/gso/gro off on all interfaces',
+        'offloads_off': list(OFFLOADS),
         'file_size_bytes': C.FILE_SIZE_BYTES,
         'ping_interval': C.PING_INTERVAL,
         'download_interval': C.DOWNLOAD_INTERVAL,
@@ -67,8 +75,8 @@ def write_meta(qdir, queue_size, duration, t0, traffic_start):
         json.dump(meta, f, indent=2)
 
 
-def _iperf_total(path):
-    """Return the rate on iperf's whole-run line (from 0 to the last end time), or None."""
+def _iperf_mbps(path):
+    """Return Mbit/s from iperf's whole-run line (from 0 to the last end time), or None."""
     try:
         with open(path) as f:
             lines = [m.groups() for m in map(IPERF_LINE.search, f) if m]
@@ -76,8 +84,8 @@ def _iperf_total(path):
         return None
     if not lines:
         return None
-    last_end = max(float(end) for _, end, _ in lines)
-    totals = [rate for start, end, rate in lines
+    last_end = max(float(end) for _, end, _, _ in lines)
+    totals = [float(rate) * TO_MBPS[prefix] for start, end, rate, prefix in lines
               if float(start) == 0 and float(end) == last_end]
     return totals[-1] if totals else None
 
@@ -91,20 +99,30 @@ def _csv_rows(path):
 
 
 def summarize(qdir, queue_size, duration):
+    """Print the run's key numbers and save them to summary.json."""
     ping = _csv_rows(os.path.join(qdir, 'ping.csv'))
-    unanswered = sum(1 for r in ping if r.endswith(','))
-    sizes = [int(r.rsplit(',', 1)[1]) for r in _csv_rows(os.path.join(qdir, 'downloads.csv'))
-             if r.rsplit(',', 1)[1].isdigit()]
-    complete = sum(1 for s in sizes if s == C.FILE_SIZE_BYTES)
-    s2d2_mbps = sum(sizes) * 8 / duration / 1e6
+    downloads = [r.split(',') for r in _csv_rows(os.path.join(qdir, 'downloads.csv'))]
+    sizes = [int(r[2]) for r in downloads if len(r) == 3 and r[2].isdigit()]
 
-    s1d1 = _iperf_total(os.path.join(qdir, 'iperf_s1.txt'))
+    s1d1, source = _iperf_mbps(os.path.join(qdir, 'iperf_s1.txt')), 'iperf client'
     if s1d1 is None:
-        server_rate = _iperf_total(os.path.join(qdir, 'iperf_d1.txt'))
-        s1d1 = '%s (server side)' % server_rate if server_rate else 'no total reported'
+        s1d1, source = _iperf_mbps(os.path.join(qdir, 'iperf_d1.txt')), 'iperf server'
+    summary = {
+        'ping_rows': len(ping),
+        'ping_unanswered': sum(1 for r in ping if r.endswith(',')),
+        'downloads_complete': sum(1 for s in sizes if s == C.FILE_SIZE_BYTES),
+        's1d1_avg_mbps': s1d1,
+        's1d1_source': source if s1d1 is not None else None,
+        's2d2_avg_mbps': round(sum(sizes) * 8 / duration / 1e6, 3),
+    }
+    with open(os.path.join(qdir, 'summary.json'), 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    s1d1_text = '%.1f Mbit/s (%s)' % (s1d1, source) if s1d1 is not None else 'not reported'
     print('q=%d: ping rows %d (%d unanswered), downloads complete %d, '
-          'S1-D1 iperf %s, S2-D2 average %.2f Mbit/s'
-          % (queue_size, len(ping), unanswered, complete, s1d1, s2d2_mbps))
+          'S1-D1 average %s, S2-D2 average %.2f Mbit/s'
+          % (queue_size, summary['ping_rows'], summary['ping_unanswered'],
+             summary['downloads_complete'], s1d1_text, summary['s2d2_avg_mbps']))
 
 
 def kill_leftovers(net):
@@ -113,24 +131,27 @@ def kill_leftovers(net):
     stop_traffic and stop_monitors should leave none; this is a safety net so a
     run always terminates cleanly. Returns 'host: command' for each kill.
     """
-    killed = []
+    hosts = {}
     for host in net.hosts:
         try:
-            netns = os.readlink('/proc/%d/ns/net' % host.pid)
+            hosts[os.readlink('/proc/%d/ns/net' % host.pid)] = host
         except OSError:
+            pass
+    shells = {host.pid for host in net.hosts}
+    killed = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit() or int(entry) in shells:
             continue
-        for entry in os.listdir('/proc'):
-            if not entry.isdigit() or int(entry) == host.pid:
+        try:
+            host = hosts.get(os.readlink('/proc/%s/ns/net' % entry))
+            if host is None:
                 continue
-            try:
-                if os.readlink('/proc/%s/ns/net' % entry) != netns:
-                    continue
-                with open('/proc/%s/cmdline' % entry, 'rb') as f:
-                    command = f.read().replace(b'\0', b' ').decode(errors='replace').strip()
-                os.kill(int(entry), signal.SIGKILL)
-                killed.append('%s: %s' % (host.name, command))
-            except OSError:
-                pass
+            with open('/proc/%s/cmdline' % entry, 'rb') as f:
+                command = f.read().replace(b'\0', b' ').decode(errors='replace').strip()
+            os.kill(int(entry), signal.SIGKILL)
+            killed.append('%s: %s' % (host.name, command))
+        except OSError:
+            pass
     return killed
 
 
@@ -176,6 +197,8 @@ def main():
     if duration <= 0:
         parser.error('duration must be positive')
 
+    signal.signal(signal.SIGTERM, _exit_on_signal)
+    signal.signal(signal.SIGHUP, _exit_on_signal)
     setLogLevel('warning')
     saved = {}
     try:
@@ -185,9 +208,17 @@ def main():
                 _write_sysctl(name, MIN_SOCKET_BUF)
                 saved[name] = value
                 print('%s raised from %s to %d for this run' % (name, value, MIN_SOCKET_BUF))
+        failed = []
         for queue_size in args.queues:
             print('=== queue %d packets, %g s' % (queue_size, duration))
-            run_one(queue_size, duration, args.outdir)
+            try:
+                run_one(queue_size, duration, args.outdir)
+            except Exception:
+                # One failed run should not cost the remaining queue sizes.
+                traceback.print_exc()
+                failed.append(queue_size)
+        if failed:
+            raise SystemExit('runs failed for queue sizes %s' % failed)
     finally:
         for name, value in saved.items():
             _write_sysctl(name, value)
