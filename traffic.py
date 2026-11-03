@@ -24,8 +24,10 @@ def _tool(name):
 def start_traffic(net, duration, outdir, t0):
     """Start servers, then clients. Returns a dict of named Popen handles."""
     s1, s2, d1, d2 = net['s1'], net['s2'], net['d1'], net['d2']
-    if not os.path.isfile(os.path.join(DATA_DIR, 'file_s2d2')):
-        raise FileNotFoundError('file_s2d2 missing from ' + DATA_DIR)
+    path = os.path.join(DATA_DIR, 'file_s2d2')
+    if not os.path.isfile(path) or os.path.getsize(path) != C.FILE_SIZE_BYTES:
+        raise RuntimeError('%s must be the %d-byte file provided with the assignment'
+                           % (path, C.FILE_SIZE_BYTES))
     os.makedirs(outdir, exist_ok=True)
 
     log = open(os.path.join(outdir, 'traffic.log'), 'w')
@@ -46,6 +48,9 @@ def start_traffic(net, duration, outdir, t0):
             _tool('http_server.py') + ['--port', str(C.HTTP_PORT), '--directory', DATA_DIR],
             **to_log)
         time.sleep(SERVER_START_DELAY)
+        for name in SERVERS:
+            if handles[name].poll() is not None:
+                raise RuntimeError('%s exited at startup; see %s' % (name, log.name))
 
         with open(os.path.join(outdir, 'iperf_s1.txt'), 'w') as iperf_out:
             handles['iperf_client'] = s1.popen(

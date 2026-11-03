@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import platform
+import re
 import signal
 import time
 
@@ -19,6 +20,9 @@ REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # it at these limits, so they are raised for the run and restored afterwards.
 SOCKET_BUF_SYSCTLS = ('net.core.rmem_max', 'net.core.wmem_max')
 MIN_SOCKET_BUF = 16 * 1024 * 1024
+# One iperf report line, e.g. "[  1] 0.0000-20.3 sec  59.8 MBytes  24.7 Mbits/sec"
+# (iperf 2.0.x prints fewer decimals, e.g. "[  3]  0.0-20.0 sec ...").
+IPERF_LINE = re.compile(r'\]\s+(\d+\.\d+)-\s*(\d+\.\d+)\s+sec.*?(\S+ [KMG]?bits/sec)')
 
 
 def _sysctl_path(name):
@@ -38,16 +42,16 @@ def _write_sysctl(name, value):
         f.write(str(value))
 
 
-def write_meta(qdir, queue_size, duration, t0):
+def write_meta(qdir, queue_size, duration, t0, traffic_start):
     meta = {
         'queue_size': queue_size,
         'duration': duration,
         't0': t0,
+        'traffic_start': round(traffic_start, 3),   # seconds after t0 the clients started
         'date': datetime.datetime.fromtimestamp(t0).isoformat(),
         'link_bw_mbit': C.LINK_BW,
         'host_delay': C.ACCESS_DELAY,
         'host_queue': C.ACCESS_QUEUE,
-        'router_queue': queue_size,
         'bottleneck_iface': C.BOTTLENECK_IFACE,
         'congestion_control': CONGESTION_CONTROL,
         'offloads': 'tso/gso/gro off on all interfaces',
@@ -64,33 +68,43 @@ def write_meta(qdir, queue_size, duration, t0):
 
 
 def _iperf_total(path):
-    """Return the rate from iperf's whole-run summary line, or None."""
+    """Return the rate on iperf's whole-run line (from 0 to the last end time), or None."""
     try:
         with open(path) as f:
-            totals = [l for l in f if ' 0.0000-' in l and ' 0.0000-1.0000 ' not in l]
+            lines = [m.groups() for m in map(IPERF_LINE.search, f) if m]
     except OSError:
         return None
-    return ' '.join(totals[-1].split()[-2:]) if totals else None
+    if not lines:
+        return None
+    last_end = max(float(end) for _, end, _ in lines)
+    totals = [rate for start, end, rate in lines
+              if float(start) == 0 and float(end) == last_end]
+    return totals[-1] if totals else None
 
 
-def summarize(qdir, queue_size):
-    def rows(name):
-        try:
-            with open(os.path.join(qdir, name)) as f:
-                return f.read().splitlines()[1:]
-        except OSError:
-            return []
+def _csv_rows(path):
+    try:
+        with open(path) as f:
+            return f.read().splitlines()[1:]
+    except OSError:
+        return []
 
-    ping = rows('ping.csv')
-    timeouts = sum(1 for r in ping if r.endswith(','))
-    downloads = [r for r in rows('downloads.csv')
-                 if r.split(',')[2] == str(C.FILE_SIZE_BYTES)]
-    rate = _iperf_total(os.path.join(qdir, 'iperf_s1.txt'))
-    if rate is None:
+
+def summarize(qdir, queue_size, duration):
+    ping = _csv_rows(os.path.join(qdir, 'ping.csv'))
+    unanswered = sum(1 for r in ping if r.endswith(','))
+    sizes = [int(r.rsplit(',', 1)[1]) for r in _csv_rows(os.path.join(qdir, 'downloads.csv'))
+             if r.rsplit(',', 1)[1].isdigit()]
+    complete = sum(1 for s in sizes if s == C.FILE_SIZE_BYTES)
+    s2d2_mbps = sum(sizes) * 8 / duration / 1e6
+
+    s1d1 = _iperf_total(os.path.join(qdir, 'iperf_s1.txt'))
+    if s1d1 is None:
         server_rate = _iperf_total(os.path.join(qdir, 'iperf_d1.txt'))
-        rate = '%s (server side)' % server_rate if server_rate else 'no total reported'
-    print('q=%d: ping rows %d (%d timeouts), downloads complete %d, iperf %s'
-          % (queue_size, len(ping), timeouts, len(downloads), rate))
+        s1d1 = '%s (server side)' % server_rate if server_rate else 'no total reported'
+    print('q=%d: ping rows %d (%d unanswered), downloads complete %d, '
+          'S1-D1 iperf %s, S2-D2 average %.2f Mbit/s'
+          % (queue_size, len(ping), unanswered, complete, s1d1, s2d2_mbps))
 
 
 def kill_leftovers(net):
@@ -112,7 +126,7 @@ def kill_leftovers(net):
                 if os.readlink('/proc/%s/ns/net' % entry) != netns:
                     continue
                 with open('/proc/%s/cmdline' % entry, 'rb') as f:
-                    command = f.read().replace(b'\0', b' ').decode().strip()
+                    command = f.read().replace(b'\0', b' ').decode(errors='replace').strip()
                 os.kill(int(entry), signal.SIGKILL)
                 killed.append('%s: %s' % (host.name, command))
             except OSError:
@@ -127,20 +141,23 @@ def run_one(queue_size, duration, outdir):
     monitors = traffic = None
     try:
         t0 = time.time()
-        write_meta(qdir, queue_size, duration, t0)
         monitors = start_monitors(net, qdir, t0)
         traffic = start_traffic(net, duration, qdir, t0)
+        write_meta(qdir, queue_size, duration, t0, time.time() - t0)
         time.sleep(duration)
     finally:
-        if traffic is not None:
-            stop_traffic(traffic)
-        if monitors is not None:
-            stop_monitors(monitors)
-        for line in kill_leftovers(net):
-            print('WARNING: killed leftover process ' + line)
-        net.stop()
-        os.system('mn -c > /dev/null 2>&1')
-    summarize(qdir, queue_size)
+        # The inner finally tears the network down even if a stop step raises.
+        try:
+            if traffic is not None:
+                stop_traffic(traffic)
+            if monitors is not None:
+                stop_monitors(monitors)
+            for line in kill_leftovers(net):
+                print('WARNING: killed leftover process ' + line)
+        finally:
+            net.stop()
+            os.system('mn -c > /dev/null 2>&1')
+    summarize(qdir, queue_size, duration)
 
 
 def main():
@@ -148,22 +165,26 @@ def main():
     parser.add_argument('--quick', action='store_true',
                         help='short run of %d s' % C.QUICK_TIME)
     parser.add_argument('--queues', type=int, nargs='+', default=C.QUEUE_SIZES,
-                        help='bottleneck queue sizes in packets (default: %s)' % C.QUEUE_SIZES)
+                        help='router buffer sizes in packets (default: %s)' % C.QUEUE_SIZES)
     parser.add_argument('--outdir', default=os.path.join(REPO_DIR, 'results'))
     parser.add_argument('--duration', type=float, help='override run length in seconds')
     args = parser.parse_args()
-    duration = args.duration or (C.QUICK_TIME if args.quick else C.EXPERIMENT_TIME)
-
-    saved = {}
-    for name in SOCKET_BUF_SYSCTLS:
-        value = _read_sysctl(name)
-        if value is not None and int(value) < MIN_SOCKET_BUF:
-            saved[name] = value
-            _write_sysctl(name, MIN_SOCKET_BUF)
-            print('%s raised from %s to %d for this run' % (name, value, MIN_SOCKET_BUF))
+    if args.duration is not None:
+        duration = args.duration
+    else:
+        duration = C.QUICK_TIME if args.quick else C.EXPERIMENT_TIME
+    if duration <= 0:
+        parser.error('duration must be positive')
 
     setLogLevel('warning')
+    saved = {}
     try:
+        for name in SOCKET_BUF_SYSCTLS:
+            value = _read_sysctl(name)
+            if value is not None and int(value) < MIN_SOCKET_BUF:
+                _write_sysctl(name, MIN_SOCKET_BUF)
+                saved[name] = value
+                print('%s raised from %s to %d for this run' % (name, value, MIN_SOCKET_BUF))
         for queue_size in args.queues:
             print('=== queue %d packets, %g s' % (queue_size, duration))
             run_one(queue_size, duration, args.outdir)

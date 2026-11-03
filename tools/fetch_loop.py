@@ -19,17 +19,12 @@ TIMEOUT = 30.0         # seconds without progress before a download is abandoned
 CONNECT_RETRY = 5.0    # seconds to keep retrying the initial connect
 POLL = 0.05            # seconds between checks for the next tick or a stop request
 
-state = {'downloading': False, 'stopping': False}
-
-
-class Stopped(Exception):
-    pass
+stopping = False
 
 
 def stop(signum, frame):
-    state['stopping'] = True
-    if state['downloading']:
-        raise Stopped()
+    global stopping
+    stopping = True
 
 
 def connect(host, port):
@@ -49,22 +44,18 @@ def connect(host, port):
 def download(conn, path):
     """GET path over conn; return the body bytes received, even if cut short."""
     received = 0
-    state['downloading'] = True
     try:
         conn.request('GET', path)
         response = conn.getresponse()
-        chunk = response.read(CHUNK)
-        while chunk:
-            received += len(chunk)
+        while not stopping:
             chunk = response.read(CHUNK)
-    except Stopped:
-        pass
+            if not chunk:
+                break
+            received += len(chunk)
     except (OSError, http.client.HTTPException) as e:
         # http.client reconnects on the next request, opening a new session.
         sys.stderr.write('download failed after %d bytes: %r\n' % (received, e))
         conn.close()
-    finally:
-        state['downloading'] = False
     return received
 
 
@@ -86,7 +77,7 @@ def main():
         out.flush()
         start = time.monotonic()
         k = 0
-        while not state['stopping'] and k * args.interval < args.duration:
+        while not stopping and k * args.interval < args.duration:
             delay = start + k * args.interval - time.monotonic()
             if delay > 0:
                 time.sleep(min(delay, POLL))

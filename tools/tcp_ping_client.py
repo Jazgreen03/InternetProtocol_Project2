@@ -2,19 +2,20 @@
 
 Probes go out on a fixed schedule (start + k * interval) whether or not
 earlier echoes have returned, so one probe is sent every interval as the spec
-asks. Echoes are matched to probes by sequence number. Output CSV: t,rtt_ms
-with one row per probe, where t = send time - t0; a probe with no echo within
-TIMEOUT gets an empty rtt_ms.
+asks. TCP returns the echoes in order, however late, and each is logged when
+it arrives. Output CSV: t,rtt_ms with one row per probe, where t = send time
+- t0; a probe still unanswered FINAL_WAIT after the last send gets an empty
+rtt_ms.
 """
 import argparse
-import collections
 import select
 import socket
 import struct
 import time
 
 MSG_SIZE = 64          # bytes per probe; first 4 bytes are the sequence number
-TIMEOUT = 2.0          # seconds to wait for an echo
+FINAL_WAIT = 2.0       # seconds to wait for outstanding echoes after the last probe
+CONNECT_TIMEOUT = 2.0
 CONNECT_RETRY = 5.0    # seconds to keep retrying the initial connect
 
 
@@ -22,13 +23,38 @@ def connect(server, port):
     deadline = time.monotonic() + CONNECT_RETRY
     while True:
         try:
-            sock = socket.create_connection((server, port), timeout=TIMEOUT)
+            sock = socket.create_connection((server, port), timeout=CONNECT_TIMEOUT)
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             return sock
         except OSError:
             if time.monotonic() > deadline:
                 raise
             time.sleep(0.2)
+
+
+def read_echoes(sock, buf, pending, out):
+    """Read what has arrived and log one row per complete echo."""
+    chunk = sock.recv(4096)
+    if not chunk:
+        raise ConnectionError('echo server closed the connection')
+    arrived = time.monotonic()
+    buf.extend(chunk)
+    while len(buf) >= MSG_SIZE:
+        seq = struct.unpack('!I', bytes(buf[:4]))[0]
+        del buf[:MSG_SIZE]
+        t, sent = pending.pop(seq)
+        out.write('%.3f,%.3f\n' % (t, (arrived - sent) * 1000))
+    out.flush()
+
+
+def wait_for_echoes(sock, buf, pending, out, until):
+    """Log echoes as they arrive until the monotonic time `until`."""
+    while True:
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            return
+        if select.select([sock], [], [], remaining)[0]:
+            read_echoes(sock, buf, pending, out)
 
 
 def main():
@@ -45,47 +71,24 @@ def main():
     sock = connect(args.server, args.port)
     padding = b'\0' * (MSG_SIZE - 4)
     buf = bytearray()
-    pending = collections.OrderedDict()   # seq -> (t, monotonic send time), oldest first
+    pending = {}   # seq -> (t, monotonic send time), in send order
 
     with open(args.out, 'w') as out:
         out.write('t,rtt_ms\n')
         start = time.monotonic()
         seq = 0
-        while True:
-            sending = seq * args.interval < args.duration
-            if not sending and not pending:
-                break
-            now = time.monotonic()
+        while seq * args.interval < args.duration:
+            wait_for_echoes(sock, buf, pending, out, start + seq * args.interval)
+            pending[seq] = (time.time() - t0, time.monotonic())
+            sock.sendall(struct.pack('!I', seq) + padding)
+            seq += 1
 
-            if sending and now >= start + seq * args.interval:
-                pending[seq] = (time.time() - t0, now)
-                sock.sendall(struct.pack('!I', seq) + padding)
-                seq += 1
-                continue
-
-            # Sleep until the next send, the oldest probe's timeout, or an echo.
-            wake = start + seq * args.interval if sending else float('inf')
-            if pending:
-                wake = min(wake, next(iter(pending.values()))[1] + TIMEOUT)
-            readable, _, _ = select.select([sock], [], [], max(0.0, wake - now))
-            if readable:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    raise ConnectionError('echo server closed the connection')
-                arrived = time.monotonic()
-                buf.extend(chunk)
-                while len(buf) >= MSG_SIZE:
-                    got = struct.unpack('!I', bytes(buf[:4]))[0]
-                    del buf[:MSG_SIZE]
-                    if got in pending:
-                        t, sent = pending.pop(got)
-                        out.write('%.3f,%.3f\n' % (t, (arrived - sent) * 1000))
-
-            now = time.monotonic()
-            while pending and next(iter(pending.values()))[1] + TIMEOUT <= now:
-                t, _ = pending.popitem(last=False)[1]
-                out.write('%.3f,\n' % t)
-            out.flush()
+        deadline = time.monotonic() + FINAL_WAIT
+        while pending and time.monotonic() < deadline:
+            if select.select([sock], [], [], max(0.0, deadline - time.monotonic()))[0]:
+                read_echoes(sock, buf, pending, out)
+        for t, _ in pending.values():
+            out.write('%.3f,\n' % t)
     sock.close()
 
 

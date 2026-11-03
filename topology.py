@@ -30,6 +30,8 @@ ROUTES = {
 }
 
 CONGESTION_CONTROL = {'s1': 'reno', 's2': 'cubic'}
+OFFLOADS = ('tcp-segmentation-offload', 'generic-segmentation-offload',
+            'generic-receive-offload')
 
 
 class LinuxRouter(Node):
@@ -38,10 +40,6 @@ class LinuxRouter(Node):
     def config(self, **params):
         super().config(**params)
         self.cmd('sysctl -w net.ipv4.ip_forward=1')
-
-    def terminate(self):
-        self.cmd('sysctl -w net.ipv4.ip_forward=0')
-        super().terminate()
 
 
 def _add_link(net, a, a_intf, a_ip, b, b_intf, b_ip, a_tc, b_tc):
@@ -55,8 +53,14 @@ def _disable_offloads(net):
     # counts each as one packet, so queue_size would not mean real packets.
     for node in net.hosts:
         for intf in node.intfNames():
-            if intf != 'lo':
-                node.cmd('ethtool -K %s tso off gso off gro off' % intf)
+            if intf == 'lo':
+                continue
+            node.cmd('ethtool -K %s tso off gso off gro off' % intf)
+            features = node.cmd('ethtool -k ' + intf)
+            for offload in OFFLOADS:
+                if offload + ': off' not in features:
+                    raise RuntimeError('%s: could not turn off %s (is ethtool installed?)'
+                                       % (intf, offload))
 
 
 def build_net(queue_size):
@@ -136,7 +140,7 @@ def run_checks(net):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Build the dumbbell and run sanity checks.')
-    parser.add_argument('--queue', type=int, default=100, help='bottleneck queue size (packets)')
+    parser.add_argument('--queue', type=int, default=100, help='router buffer size (packets)')
     parser.add_argument('--cli', action='store_true', help='open the Mininet CLI after the checks')
     args = parser.parse_args()
 
