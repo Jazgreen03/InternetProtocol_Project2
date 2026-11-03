@@ -8,6 +8,7 @@ import config as C
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(REPO_DIR, 'tools')
+DATA_DIR = os.path.join(REPO_DIR, 'data')     # holds file_s2d2 from the assignment
 SERVER_START_DELAY = 1.0   # seconds between starting servers and clients
 CLIENT_GRACE = 5.0         # seconds clients get to finish on their own
 STOP_WAIT = 2.0            # seconds between terminate() and kill()
@@ -20,41 +21,36 @@ def _tool(name):
     return [sys.executable, os.path.join(TOOLS_DIR, name)]
 
 
-def _make_file(serve_dir):
-    path = os.path.join(serve_dir, 'file_s2d2')
-    if not os.path.exists(path) or os.path.getsize(path) != C.FILE_SIZE_BYTES:
-        os.makedirs(serve_dir, exist_ok=True)
-        subprocess.run(['dd', 'if=/dev/urandom', 'of=' + path, 'bs=1M',
-                        'count=%d' % C.FILE_SIZE_MB],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def start_traffic(net, duration, outdir, t0):
     """Start servers, then clients. Returns a dict of named Popen handles."""
     s1, s2, d1, d2 = net['s1'], net['s2'], net['d1'], net['d2']
+    if not os.path.isfile(os.path.join(DATA_DIR, 'file_s2d2')):
+        raise FileNotFoundError('file_s2d2 missing from ' + DATA_DIR)
     os.makedirs(outdir, exist_ok=True)
-    serve_dir = os.path.join(outdir, 'www')
-    _make_file(serve_dir)
 
     log = open(os.path.join(outdir, 'traffic.log'), 'w')
     to_log = {'stdout': log, 'stderr': log}
     handles = {}
     try:
-        handles['iperf_server'] = d1.popen(
-            ['iperf', '-s', '-w', '16m', '-p', str(C.IPERF_PORT)], **to_log)
+        # -w 16m on the receiver keeps TX-1 from being receive-window limited;
+        # the assignment notes it is not needed on the client.
+        with open(os.path.join(outdir, 'iperf_d1.txt'), 'w') as iperf_out:
+            handles['iperf_server'] = d1.popen(
+                ['iperf', '-s', '-w', '16m', '-p', str(C.IPERF_PORT)],
+                stdout=iperf_out, stderr=log)
         handles['echo_server'] = d1.popen(
             _tool('tcp_echo_server.py') + ['--port', str(C.PING_PORT)], **to_log)
         # S2 runs the HTTP server because congestion control acts on the data
         # sender; with the server on d2, Cubic would never be exercised.
         handles['http_server'] = s2.popen(
-            [sys.executable, '-m', 'http.server', str(C.HTTP_PORT), '--directory', serve_dir],
+            _tool('http_server.py') + ['--port', str(C.HTTP_PORT), '--directory', DATA_DIR],
             **to_log)
         time.sleep(SERVER_START_DELAY)
 
         with open(os.path.join(outdir, 'iperf_s1.txt'), 'w') as iperf_out:
             handles['iperf_client'] = s1.popen(
                 ['iperf', '-c', C.IP['d1'], '-p', str(C.IPERF_PORT), '-t', str(duration),
-                 '-i', '1', '-w', '16m', '-Z', 'reno'],
+                 '-i', '1', '-Z', 'reno'],
                 stdout=iperf_out, stderr=log)
         common = ['--duration', str(duration), '--t0', repr(t0)]
         handles['ping_client'] = s1.popen(

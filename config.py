@@ -5,10 +5,10 @@ EXPERIMENT_TIME = 180          # seconds
 QUICK_TIME = 20                # seconds
 
 LINK_BW = 1000                 # Mbit/s
-ACCESS_DELAY = '5ms'
-ACCESS_QUEUE = 2000            # packets
+ACCESS_DELAY = '10ms'         # on the host side of each access link only
+ACCESS_QUEUE = 2000            # packets, host interfaces
 
-FILE_SIZE_MB = 10
+FILE_SIZE_MB = 1               # data/file_s2d2, provided with the assignment
 FILE_SIZE_BYTES = FILE_SIZE_MB * 1024 * 1024
 PING_INTERVAL = 0.1            # seconds
 DOWNLOAD_INTERVAL = 3          # seconds

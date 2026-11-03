@@ -11,12 +11,12 @@ from mininet.node import Node
 
 import config as C
 
-# (node, intf, ip, node, intf, ip)
+# (host, intf, ip, router, intf, ip)
 ACCESS_LINKS = [
     ('s1', C.SENDER_IFACES['s1'], C.IP['s1'], 'r1', 'r1-eth0', C.IP['r1_s1']),
     ('s2', C.SENDER_IFACES['s2'], C.IP['s2'], 'r1', 'r1-eth1', C.IP['r1_s2']),
-    ('r2', C.R2_EGRESS_IFACES[0], C.IP['r2_d1'], 'd1', 'd1-eth0', C.IP['d1']),
-    ('r2', C.R2_EGRESS_IFACES[1], C.IP['r2_d2'], 'd2', 'd2-eth0', C.IP['d2']),
+    ('d1', 'd1-eth0', C.IP['d1'], 'r2', C.R2_EGRESS_IFACES[0], C.IP['r2_d1']),
+    ('d2', 'd2-eth0', C.IP['d2'], 'r2', C.R2_EGRESS_IFACES[1], C.IP['r2_d2']),
 ]
 BOTTLENECK_LINK = ('r1', C.BOTTLENECK_IFACE, C.IP['r1_r2'], 'r2', 'r2-eth0', C.IP['r2_r1'])
 
@@ -44,10 +44,10 @@ class LinuxRouter(Node):
         super().terminate()
 
 
-def _add_link(net, a, a_intf, a_ip, b, b_intf, b_ip, **tc):
+def _add_link(net, a, a_intf, a_ip, b, b_intf, b_ip, a_tc, b_tc):
     net.addLink(a, b, intfName1=a_intf, intfName2=b_intf,
-                params1={'ip': a_ip + '/24'}, params2={'ip': b_ip + '/24'},
-                bw=C.LINK_BW, **tc)
+                params1=dict(a_tc, ip=a_ip + '/24'), params2=dict(b_tc, ip=b_ip + '/24'),
+                bw=C.LINK_BW)
 
 
 def _disable_offloads(net):
@@ -68,13 +68,17 @@ def build_net(queue_size):
         for name in ('r1', 'r2'):
             net.addHost(name, cls=LinuxRouter, ip=None)
 
+        # Delay sits only on host interfaces: data is delayed 10 ms leaving the
+        # sender and ACKs 10 ms leaving the receiver, so the RTT is 20 ms. Router
+        # interfaces get no delay, because netem's limit (max_queue_size) also
+        # counts packets that are only being delayed; this way every router
+        # buffer holds exactly queue_size real packets and its backlog is the
+        # real router queue.
+        host_tc = {'delay': C.ACCESS_DELAY, 'max_queue_size': C.ACCESS_QUEUE}
+        router_tc = {'max_queue_size': queue_size}
         for link in ACCESS_LINKS:
-            _add_link(net, *link, delay=C.ACCESS_DELAY,
-                      max_queue_size=C.ACCESS_QUEUE)
-        # No delay on the bottleneck: Mininet uses max_queue_size as the netem
-        # limit, which also counts packets that are only being delayed (~830
-        # for 10 ms at 1 Gbps), so a small delayed queue would drop nearly all.
-        _add_link(net, *BOTTLENECK_LINK, max_queue_size=queue_size)
+            _add_link(net, *link, host_tc, router_tc)
+        _add_link(net, *BOTTLENECK_LINK, router_tc, router_tc)
 
         net.build()
         net.start()
@@ -104,8 +108,12 @@ def run_checks(net):
     print('--- ping s2 -> d2')
     print(s2.cmd('ping -c 5 ' + C.IP['d2']))
 
-    print('--- bottleneck qdisc')
-    print(r1.cmd('tc -s qdisc show dev ' + C.BOTTLENECK_IFACE))
+    print('--- netem per interface (routers: limit = queue size, no delay)')
+    for name in ('s1', 's2', 'd1', 'd2', 'r1', 'r2'):
+        for intf in net[name].intfNames():
+            if intf != 'lo':
+                print('%-8s %s' % (intf, net[name].cmd(
+                    'tc qdisc show dev %s | grep -o "netem.*"' % intf).strip()))
     print('--- bottleneck offloads')
     print(r1.cmd('ethtool -k %s | grep -E "^(tcp-segmentation|generic-segmentation|generic-receive)-offload"'
                  % C.BOTTLENECK_IFACE))
