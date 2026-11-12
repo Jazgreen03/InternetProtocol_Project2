@@ -20,7 +20,7 @@ Use `sudo python3` (not the virtual environment). Use a new folder name for each
 
 ```bash
 sudo python3 run_experiment.py --quick --queues 20 --outdir results/quick_test   # 20 s test to make sure running
-sudo python3 run_experiment.py --outdir results/run4                             # full run, about 10 min approx.
+sudo python3 run_experiment.py --outdir results/run6                            # full run, about 10 min approx.
 ```
 
 After a crash, run `sudo mn -c` and try again.
