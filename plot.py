@@ -1,14 +1,4 @@
-"""Plot a results folder: four plots per queue size, plus a throughput summary.
-
-Usage:
-    python3 plot.py results/run1                 # plots go to results/run1/plots/
-    python3 plot.py results/run1 --out my_plots  # choose another folder
-    python3 plot.py results/run1 --free          # queue plot shows free buffer space
-
-Needs only matplotlib (pip install matplotlib); no root, no Mininet.
-Expects <folder>/q<N>/ with cwnd_s1.csv, cwnd_s2.csv, queue_r1.csv,
-queue_r2.csv, throughput.csv, ping.csv (and optionally meta.json, summary.json).
-A missing or empty file skips that plot with a warning instead of failing.
+"""four plots per queue size, plus a throughput summary.
 
 """
 import argparse
@@ -24,7 +14,7 @@ import matplotlib.pyplot as plt
 
 DEFAULT_DURATION = 180
 S1_COLOR, S2_COLOR = '#1f77b4', '#d95f02'     # Reno, Cubic
-R1_COLOR, R2_COLOR = '#2a9d8f', '#8e44ad'
+R1_COLOR, R2_COLOR, R2B_COLOR = '#2a9d8f', '#8e44ad', '#d62f8c'
 
 
 def load_csv(path, columns):
@@ -78,7 +68,7 @@ def finish(fig, ax, title, ylabel, duration, path):
     ax.grid(alpha=0.3)
     fig.suptitle(title)
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    fig.savefig(path, dpi=150, bbox_inches='tight')   # keeps outside legends in the image
     plt.close(fig)
     print('wrote', path)
 
@@ -111,19 +101,26 @@ def plot_cwnd(qdir, q, duration, outdir):
 
 
 def plot_queue(qdir, q, duration, outdir, free):
-    r1 = load_csv(os.path.join(qdir, 'queue_r1.csv'),
-                  ['t', 'backlog_pkts', 'dropped_total'])
-    r2 = load_csv(os.path.join(qdir, 'queue_r2.csv'),
-                  ['t', 'backlog_pkts', 'dropped_total'])
-    if r1 is None and r2 is None:
-        return warn(qdir, 'queue_r1.csv / queue_r2.csv')
     cols = ['t', 'backlog_pkts', 'dropped_total']
+
+    def load(name):
+        return load_csv(os.path.join(qdir, name), cols)
+
+    # Each router buffer has its own limit q. R2 has two egress buffers, recorded
+    # separately; older runs have one summed file (limit 2q), still accepted.
+    entries = [('R1', load('queue_r1.csv'), R1_COLOR, q),
+               ('R2 (eth1, to D1)', load('queue_r2_eth1.csv'), R2_COLOR, q),
+               ('R2 (eth2, to D2)', load('queue_r2_eth2.csv'), R2B_COLOR, q)]
+    if entries[1][1] is None and entries[2][1] is None:
+        entries[1:] = [('R2 (eth1+eth2 summed)', load('queue_r2.csv'), R2_COLOR, 2 * q)]
+    if all(e[1] is None for e in entries):
+        return warn(qdir, 'queue_r1.csv / queue_r2*.csv')
+
     fig, (ax, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
                                   gridspec_kw={'height_ratios': [3, 1.4]})
-    # R1 has one buffer (limit q); R2's two egress buffers are summed (limit 2q).
-    for data, name, color, cap in ((r1, 'R1', R1_COLOR, q), (r2, 'R2', R2_COLOR, 2 * q)):
+    for name, data, color, cap in entries:
         if data is None:
-            warn(qdir, 'queue_%s.csv' % name.lower())
+            warn(qdir, name)
             continue
         data = clip(data, cols, duration)
         if free:
@@ -136,15 +133,15 @@ def plot_queue(qdir, q, duration, outdir, free):
         ax2.plot(data['t'], data['dropped_total'], color=color, label='%s drops' % name)
     if not free:
         ax.axhline(q, color='gray', linestyle='--', linewidth=1,
-                   label='R1 buffer limit (%d)' % q)
+                   label='buffer limit per interface (%d)' % q)
     ax.set_ylabel('Free buffer space (packets)' if free else 'Queue length (packets)')
-    ax.legend(loc='upper right')
+    # Legends sit outside the axes (to the right) so they never cover a peak.
+    ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), borderaxespad=0, fontsize=8)
     ax.grid(alpha=0.3)
     ax2.set_ylabel('Cumulative drops')
-    ax2.legend(loc='upper left')
-    finish(fig, ax2, 'Router queues, queue size %d packets (R2 = sum of its two egress '
-                     'buffers)' % q, 'Cumulative drops', duration,
-           os.path.join(outdir, 'queue_q%d.png' % q))
+    ax2.legend(loc='upper left', bbox_to_anchor=(1.01, 1), borderaxespad=0, fontsize=8)
+    finish(fig, ax2, 'Router queues, queue size %d packets' % q, 'Cumulative drops',
+           duration, os.path.join(outdir, 'queue_q%d.png' % q))
 
 
 def plot_throughput(qdir, q, duration, outdir, summary):

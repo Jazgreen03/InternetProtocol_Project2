@@ -1,10 +1,4 @@
-"""Sample a router's queue (tc netem backlog and drops) at a fixed interval.
-
-Runs inside a router's network namespace (launched with host.popen). Writes
-t,backlog_pkts,dropped_total with t = time.time() - t0. When several
-interfaces are given (R2 has two egress interfaces) their backlog and drops
-are summed into one row.
-
+""""Sample a router's queue.
 """
 import argparse
 import math
@@ -14,8 +8,6 @@ import subprocess
 import sys
 import time
 
-# One netem block: "qdisc netem ... Sent ... (dropped N, ...) backlog Xb Yp ..."
-# The htb block above it has the same drop count but no useful backlog.
 NETEM = re.compile(r'qdisc netem.*?\(dropped (\d+).*?backlog \d+b (\d+)p', re.DOTALL)
 
 stop = False

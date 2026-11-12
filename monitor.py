@@ -1,14 +1,4 @@
-# TEMPORARY STUB written by Teammate A so run_experiment.py runs.
-"""Monitors for the Reno vs Cubic experiment (replaces Teammate A's stub).
-
-start_monitors launches one sampler per node (s1, s2, r1, r2) inside that
-node's network namespace; stop_monitors stops them and builds throughput.csv.
-
-Files written to outdir (t = time.time() - t0 in every file):
-  cwnd_s1.csv, cwnd_s2.csv    t,cwnd_segments,rtt_ms
-  queue_r1.csv, queue_r2.csv  t,backlog_pkts,dropped_total
-  throughput.csv              t,s1d1_mbps,s2d2_mbps
-  acked_s1.csv, acked_s2.csv  t,bytes_acked (raw cumulative bytes; input to throughput.csv)
+"""Monitors for the Reno vs Cubic experiment.
 """
 import csv
 import os
@@ -58,9 +48,12 @@ def start_monitors(net, outdir, t0):
         _launch(handles, net['r1'], _tool('queue_sampler.py') + common + [
             '--ifaces', C.BOTTLENECK_IFACE,
             '--out', path('queue_r1.csv')], log)
-        _launch(handles, net['r2'], _tool('queue_sampler.py') + common + [
-            '--ifaces'] + list(C.R2_EGRESS_IFACES) + [
-            '--out', path('queue_r2.csv')], log)
+        # R2 has two egress buffers, each with its own queue_size limit, so each
+        # is sampled into its own file (they can be added up when plotting).
+        for iface in C.R2_EGRESS_IFACES:
+            _launch(handles, net['r2'], _tool('queue_sampler.py') + common + [
+                '--ifaces', iface,
+                '--out', path('queue_r2_%s.csv' % iface.split('-')[1])], log)
     except BaseException:   # includes the SystemExit raised on SIGTERM
         _stop(handles)
         raise
@@ -84,14 +77,14 @@ def _stop(procs):
 
 
 def _read_acked(path):
-    """Return {sample index k (t rounded to the 0.1 s grid): cumulative bytes}."""
+    """Return {sample index k (t rounded to the 0.1 s grid): (actual t, cumulative bytes)}."""
     series = {}
     try:
         with open(path) as f:
             for row in csv.DictReader(f):
                 try:
-                    k = int(round(float(row['t']) / SAMPLE_INTERVAL))
-                    series[k] = int(row['bytes_acked'])
+                    t = float(row['t'])
+                    series[int(round(t / SAMPLE_INTERVAL))] = (t, int(row['bytes_acked']))
                 except (KeyError, TypeError, ValueError):
                     continue          # a half-written last row
     except OSError:
@@ -100,15 +93,16 @@ def _read_acked(path):
 
 
 def _rates(series):
-    """Turn cumulative bytes into {k: Mbit/s}; a gap in samples is averaged over."""
+    """Turn cumulative bytes into {k: Mbit/s}, dividing by the actual time between samples."""
     rates = {}
-    prev_k, prev_bytes = None, 0
+    prev_t, prev_bytes = None, 0
     for k in sorted(series):
-        if prev_k is None:
-            prev_k = k - 1            # counters start at 0 when the connection opens
-        elapsed = (k - prev_k) * SAMPLE_INTERVAL
-        rates[k] = max(0, series[k] - prev_bytes) * 8 / elapsed / 1e6
-        prev_k, prev_bytes = k, series[k]
+        t, acked = series[k]
+        if prev_t is None:
+            prev_t = t - SAMPLE_INTERVAL   # counters start at 0 when the connection opens
+        if t > prev_t:
+            rates[k] = max(0, acked - prev_bytes) * 8 / (t - prev_t) / 1e6
+        prev_t, prev_bytes = t, acked
     return rates
 
 

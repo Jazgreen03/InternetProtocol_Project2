@@ -1,14 +1,4 @@
 """Sample a sender's TCP state (cwnd, RTT, bytes_acked) from `ss -tin`.
-
-Runs inside s1 or s2's network namespace (launched with host.popen).
-Writes two CSVs, both with t = time.time() - t0:
-  --out        t,cwnd_segments,rtt_ms
-  --acked-out  t,bytes_acked          (cumulative; throughput.csv is built from it)
-
---filter is an ss filter expression, e.g. "( dport = :5001 )" on s1 (the iperf
-flow, not the ping train on 5002) or "( sport = :8000 )" on s2 (HTTP server).
-Rows are skipped while no matching connection exists.
-
 """
 import argparse
 import math
