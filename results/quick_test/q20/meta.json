@@ -1,9 +1,9 @@
 {
   "queue_size": 20,
   "duration": 20,
-  "t0": 1794445171.5580904,
-  "traffic_start": 1.028,
-  "date": "2026-11-11T19:59:31.558090",
+  "t0": 1794521072.0567074,
+  "traffic_start": 1.037,
+  "date": "2026-11-12T17:04:32.056707",
   "link_bw_mbit": 1000,
   "host_delay": "10ms",
   "host_queue": 2000,

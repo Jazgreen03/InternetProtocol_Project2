@@ -1,4 +1,4 @@
-""""Sample a router's queue.
+"""Sample a router's queue.
 """
 import argparse
 import math
@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-NETEM = re.compile(r'qdisc netem.*?\(dropped (\d+).*?backlog \d+b (\d+)p', re.DOTALL)
+NETEM = re.compile(r'qdisc netem.*?\(dropped (\d+).*?backlog \S+ (\d+)p', re.DOTALL)
 
 stop = False
 

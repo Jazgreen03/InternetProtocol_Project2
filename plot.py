@@ -46,7 +46,7 @@ def load_json(path):
 
 
 def clip(data, columns, duration):
-    """Keep rows with t <= duration and drop rows whose y-columns are empty."""
+    """Keep only the rows with t <= duration (empty cells are dropped later, by series())."""
     out = {c: [] for c in columns}
     for i, t in enumerate(data[columns[0]]):
         if t <= duration:
