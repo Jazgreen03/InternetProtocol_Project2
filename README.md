@@ -30,10 +30,12 @@ Results are written to `results/run4/q20/`, `q50/` and `q100/`.
 ## Plots
 
 ```bash
-python3 -m venv .venv            # first time only
+sudo apt install -y python3.10-venv   # first time only
+cd ~/InternetProtocol_Project2
+python3 -m venv .venv
 source .venv/bin/activate
-pip install matplotlib           # first time only
-python plot.py results/run4 --out ./run4-plots
+pip install matplotlib          # first time only
+python plot.py results/run6 --out ./run6-plots
 ```
 
 Add `--free` (with a different `--out` folder) to plot free buffer space instead of queue length.
