@@ -10,7 +10,6 @@ sudo apt update
 sudo apt install -y mininet iperf ethtool
 git clone https://github.com/Jazgreen03/InternetProtocol_Project2.git
 cd InternetProtocol_Project2
-git checkout <Green/monitors-plots>
 ls -l data/file_s2d2        # must be 1048576 bytes
 ```
 
@@ -25,14 +24,13 @@ sudo python3 run_experiment.py --outdir results/run6                            
 
 After a crash, run `sudo mn -c` and try again.
 
-Results are written to `results/run4/q20/`, `q50/` and `q100/`.
+Results are written to `results/run6/q20/`, `q50/` and `q100/`.
 
 ## Plots
 
 ```bash
-sudo apt install -y python3.10-venv   # first time only
-cd ~/InternetProtocol_Project2
-python3 -m venv .venv
+sudo apt install -y python3-venv      # first time only
+python3 -m venv .venv                 # first time only
 source .venv/bin/activate
 pip install matplotlib          # first time only
 python plot.py results/run6 --out ./run6-plots
