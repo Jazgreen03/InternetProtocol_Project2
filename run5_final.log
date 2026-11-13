@@ -1,0 +1,9 @@
+nohup: ignoring input
+net.core.rmem_max raised from 212992 to 16777216 for this run
+net.core.wmem_max raised from 212992 to 16777216 for this run
+=== queue 20 packets, 180 s
+q=20: ping rows 1800 (0 unanswered), downloads complete 60, S1-D1 average 91.1 Mbit/s (iperf client), S2-D2 average 2.80 Mbit/s
+=== queue 50 packets, 180 s
+q=50: ping rows 1800 (0 unanswered), downloads complete 60, S1-D1 average 143.0 Mbit/s (iperf client), S2-D2 average 2.80 Mbit/s
+=== queue 100 packets, 180 s
+q=100: ping rows 1800 (0 unanswered), downloads complete 60, S1-D1 average 212.0 Mbit/s (iperf client), S2-D2 average 2.80 Mbit/s

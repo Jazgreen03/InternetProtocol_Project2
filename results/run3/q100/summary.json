@@ -1,0 +1,9 @@
+{
+  "ping_rows": 1800,
+  "ping_unanswered": 0,
+  "downloads_complete": 60,
+  "s1d1_avg_mbps": 220.0,
+  "s1d1_source": "iperf client",
+  "s2d2_avg_mbps": 2.796,
+  "client_errors": []
+}

@@ -1,0 +1,27 @@
+{
+  "queue_size": 100,
+  "duration": 180,
+  "t0": 1794448833.608921,
+  "traffic_start": 1.033,
+  "date": "2026-11-11T21:00:33.608921",
+  "link_bw_mbit": 1000,
+  "host_delay": "10ms",
+  "host_queue": 2000,
+  "bottleneck_iface": "r1-eth2",
+  "congestion_control": {
+    "s1": "reno",
+    "s2": "cubic"
+  },
+  "offloads_off": [
+    "tcp-segmentation-offload",
+    "generic-segmentation-offload",
+    "generic-receive-offload"
+  ],
+  "file_size_bytes": 1048576,
+  "ping_interval": 0.1,
+  "download_interval": 3,
+  "kernel": "5.15.0-106-generic",
+  "python": "3.10.12",
+  "net.core.rmem_max": "16777216",
+  "net.core.wmem_max": "16777216"
+}
